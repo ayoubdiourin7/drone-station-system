@@ -1,9 +1,44 @@
-import React, { useState } from 'react';
-import { Wifi, Battery, Database, HardDrive } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Wifi, Battery, HardDrive, Clock } from 'lucide-react';
 
 function App() {
-  const [isConnected, setIsConnected] = useState(false);
   const [activeTab, setActiveTab] = useState('connection');
+  const [drones, setDrones] = useState([]);
+
+  useEffect(() => {
+    const ws = new WebSocket("ws://localhost:8000/ws/control");
+
+    ws.onopen = () => {
+      console.log("[CLIENT] ✅ Connected to WebSocket server");
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === "drone_list") {
+        console.log("[CLIENT] 📥 Received drone list", data.drones);
+        setDrones(data.drones.map(drone_id => ({ name: drone_id, signal: "N/A", battery: "N/A", storage: "N/A", connectionTime: "N/A" })));
+      } else if (data.type === "telemetry") {
+        setDrones(prevDrones => prevDrones.map(drone =>
+          drone.name === data.drone_id
+            ? { ...drone, signal: data.signal_strength, battery: `${data.battery}%`, storage: `${data.storage_used}GB`, connectionTime: new Date(data.timestamp * 1000).toLocaleTimeString() }
+            : drone
+        ));
+      }
+    };
+
+    ws.onclose = () => {
+      console.log("[CLIENT] ❌ Disconnected from WebSocket server");
+    };
+
+    return () => ws.close();
+  }, []);
+
+  const getSignalColor = (signal) => {
+    if (signal === "N/A") return "text-gray-500";
+    if (signal >= 80) return "text-green-500";
+    if (signal >= 50) return "text-yellow-500";
+    return "text-red-500";
+  };
 
   const tabs = [
     { id: 'connection', label: 'Connection' },
@@ -13,20 +48,14 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
-      {/* Header */}
       <header className="bg-white shadow-sm w-full">
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8 flex justify-between items-center">
           <h1 className="text-2xl font-semibold text-gray-900"> 
             𖥂 Drone Control Station 𖥂 
           </h1>
-          <div className="flex items-center space-x-2">
-            <span className="text-sm">Status: {isConnected ? 'Connected' : 'Disconnected'}</span>
-            <Wifi className={`w-5 h-5 ${isConnected ? 'text-green-500' : 'text-red-500'}`} />
-          </div>
         </div>
       </header>
 
-      {/* Navigation Tabs */}
       <nav className="w-full flex justify-center mt-6">
         <div className="border-b border-gray-200 flex space-x-8">
           {tabs.map((tab) => (
@@ -45,51 +74,61 @@ function App() {
         </div>
       </nav>
 
-      {/* Main Content */}
       <main className="w-full flex flex-col items-center justify-center flex-grow mt-8">
         {activeTab === 'connection' && (
-          <div className="bg-white rounded-lg shadow-md p-6 w-96 text-center">
-            <h2 className="text-lg font-medium text-gray-900 mb-4">WiFi Connection</h2>
-            <button
-              onClick={() => setIsConnected(!isConnected)}
-              className="w-full bg-gray-900 text-white py-3 px-4 rounded-md hover:bg-gray-800 transition-colors duration-200"
-            >
-              {isConnected ? 'Disconnect' : 'Connect'}
-            </button>
-          </div>
-        )}
-        
-        {isConnected && activeTab === 'connection' && (
-          <div className="bg-white rounded-lg shadow-md p-6 w-96 text-center mt-6">
-            <h2 className="text-lg font-medium text-gray-900 mb-4">Drone Status</h2>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <Wifi className="w-5 h-5 text-gray-500" />
-                  <span className="text-sm text-gray-600">Signal Strength</span>
-                </div>
-                <span className="text-sm font-medium">Excellent</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <Battery className="w-5 h-5 text-gray-500" />
-                  <span className="text-sm text-gray-600">Battery</span>
-                </div>
-                <span className="text-sm font-medium">85%</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <HardDrive className="w-5 h-5 text-gray-500" />
-                  <span className="text-sm text-gray-600">Storage Available</span>
-                </div>
-                <span className="text-sm font-medium">2.1GB</span>
-              </div>
-            </div>
+          <div className="bg-white rounded-lg shadow-md p-6 w-3/4 text-center">
+            <h2 className="text-lg font-medium text-gray-900 mb-4">Connected Drones</h2>
+            {drones.length === 0 ? (
+              <p className="text-gray-600">No drones are currently connected.</p>
+            ) : (
+              <table className="min-w-full bg-white border border-gray-200 rounded-lg">
+                <thead>
+                  <tr className="bg-gray-100">
+                    <th className="py-2 px-4 border-b">Name</th>
+                    <th className="py-2 px-4 border-b">Signal Strength</th>
+                    <th className="py-2 px-4 border-b">Battery</th>
+                    <th className="py-2 px-4 border-b">Storage Available</th>
+                    <th className="py-2 px-4 border-b">Connection Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {drones.map((drone) => (
+                    <tr key={drone.name} className="text-center border-b">
+                      <td className="py-2 px-4">{drone.name}</td>
+                      <td className="py-2 px-4">
+                        <div className="flex items-center space-x-2 justify-center">
+                          <Wifi className={`w-5 h-5 ${getSignalColor(drone.signal)}`} />
+                          <span>{drone.signal === "N/A" ? "N/A" : `${drone.signal}%`}</span>
+                        </div>
+                      </td>
+                      <td className="py-2 px-4">
+                        <div className="flex items-center space-x-2 justify-center">
+                          <Battery className="w-5 h-5 text-gray-500" />
+                          <span>{drone.battery}</span>
+                        </div>
+                      </td>
+                      <td className="py-2 px-4">
+                        <div className="flex items-center space-x-2 justify-center">
+                          <HardDrive className="w-5 h-5 text-gray-500" />
+                          <span>{drone.storage}</span>
+                        </div>
+                      </td>
+                      <td className="py-2 px-4">
+                        <div className="flex items-center space-x-2 justify-center">
+                          <Clock className="w-5 h-5 text-gray-500" />
+                          <span>{drone.connectionTime}</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         )}
       </main>
     </div>
   );
-} 
+}
 
 export default App;
