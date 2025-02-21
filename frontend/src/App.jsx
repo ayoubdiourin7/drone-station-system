@@ -6,7 +6,8 @@ function App() {
   const [drones, setDrones] = useState([]);
 
   useEffect(() => {
-    const ws = new WebSocket("ws://localhost:8000/ws/control");
+    // Update WebSocket URL to use the UI endpoint
+    const ws = new WebSocket("ws://localhost:8000/ws/ui");
 
     ws.onopen = () => {
       console.log("[CLIENT] ✅ Connected to WebSocket server");
@@ -14,14 +15,36 @@ function App() {
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
+      console.log("[CLIENT] Received WebSocket message:", data); // Debugging
       if (data.type === "drone_list") {
         console.log("[CLIENT] 📥 Received drone list", data.drones);
-        setDrones(data.drones.map(drone_id => ({ name: drone_id, signal: "N/A", battery: "N/A", storage: "N/A", connectionTime: "N/A" })));
+        // Keep existing drone data when updating list
+        setDrones(prevDrones => {
+          const existingDronesMap = new Map(
+            prevDrones.map(drone => [drone.id, drone])
+          );
+          
+          return data.drones.map(drone_id => ({
+            ...(existingDronesMap.get(drone_id) || {
+              id: drone_id,
+              name: drone_id,
+              signal: "N/A",
+              battery: "N/A",
+              storage: "N/A",
+              connectionTime: new Date().toLocaleTimeString()
+            })
+          }));
+        });
       } else if (data.type === "telemetry") {
+        console.log("[CLIENT] 📡 Received telemetry for drone:", data.drone_id);
         setDrones(prevDrones => prevDrones.map(drone =>
-          drone.name === data.drone_id
-            ? { ...drone, signal: data.signal_strength, battery: `${data.battery}%`, storage: `${data.storage_used}GB`, connectionTime: new Date(data.timestamp * 1000).toLocaleTimeString() }
-            : drone
+          drone.id === data.drone_id ? {
+            ...drone,
+            signal: data.signal_strength,
+            battery: `${data.battery}%`,
+            storage: `${data.storage_used.toFixed(1)}GB`,
+            connectionTime: new Date(data.timestamp * 1000).toLocaleTimeString()
+          } : drone
         ));
       }
     };
@@ -51,7 +74,7 @@ function App() {
       <header className="bg-white shadow-sm w-full">
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8 flex justify-between items-center">
           <h1 className="text-2xl font-semibold text-gray-900"> 
-            𖥂 Drone Control Station 𖥂 
+              𖥂 Drone Control Station 𖥂 
           </h1>
         </div>
       </header>

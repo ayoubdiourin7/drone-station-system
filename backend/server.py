@@ -25,6 +25,7 @@ app.add_middleware(
 
 # Store active drone connections
 active_drones: Dict[str, WebSocket] = {}
+active_ui_clients: Set[WebSocket] = set()
 
 @app.get("/")
 async def root():
@@ -34,6 +35,15 @@ async def root():
         "active_drones": len(active_drones),
         "server_time": time.strftime("%Y-%m-%d %H:%M:%S")
     }
+
+async def broadcast_drone_list():
+    """Broadcast updated drone list to all UI clients"""
+    message = {
+        "type": "drone_list",
+        "drones": list(active_drones.keys()),
+        "timestamp": time.time()
+    }
+    await broadcast_to_ui_clients(message)
 
 @app.websocket("/ws/drone/{drone_id}")
 async def websocket_drone_endpoint(websocket: WebSocket, drone_id: str):
@@ -48,6 +58,9 @@ async def websocket_drone_endpoint(websocket: WebSocket, drone_id: str):
     active_drones[drone_id] = websocket
     print(f"[SERVER] ✅ Drone connected: {drone_id}")
     print(f"[SERVER] 📊 Active drones: {len(active_drones)}")
+    
+    # Broadcast updated drone list when a new drone connects
+    await broadcast_drone_list()
     
     try:
         # Send welcome message to the drone
@@ -68,6 +81,15 @@ async def websocket_drone_endpoint(websocket: WebSocket, drone_id: str):
                 
                 # Process different message types
                 if message["type"] == "telemetry":
+                    # Add drone_id to telemetry data
+                    telemetry_data = {
+                        "type": "telemetry",
+                        "drone_id": drone_id,
+                        **message
+                    }
+                    # Broadcast to UI clients
+                    await broadcast_to_ui_clients(telemetry_data)
+                    
                     # In a full implementation, we would broadcast to UI clients
                     print(f"[SERVER] 📡 Telemetry from {drone_id}: Battery: {message.get('battery', 'N/A')}%, Signal: {message.get('signal_strength', 'N/A')}%")
                     
@@ -112,10 +134,14 @@ async def websocket_drone_endpoint(websocket: WebSocket, drone_id: str):
         # Handle disconnection
         print(f"[SERVER] ❌ Drone disconnected: {drone_id}")
         active_drones.pop(drone_id, None)
+        # Broadcast updated drone list when a drone disconnects
+        await broadcast_drone_list()
     
     except Exception as e:
         print(f"[SERVER] ⚠️ Error in drone {drone_id} connection: {str(e)}")
         active_drones.pop(drone_id, None)
+        # Broadcast updated drone list on error
+        await broadcast_drone_list()
 
 @app.websocket("/ws/control")
 async def websocket_control_endpoint(websocket: WebSocket):
@@ -166,6 +192,46 @@ async def websocket_control_endpoint(websocket: WebSocket):
     
     except Exception as e:
         print(f"[SERVER] ⚠️ Error in control interface connection: {str(e)}")
+
+@app.websocket("/ws/ui")
+async def websocket_ui_endpoint(websocket: WebSocket):
+    """Handle WebSocket connections from UI clients"""
+    await websocket.accept()
+    client_id = f"ui-{str(uuid.uuid4())[:8]}"
+    print(f"[SERVER] ✅ UI client connected: {client_id}")
+    
+    # Add to active UI clients
+    active_ui_clients.add(websocket)
+    
+    try:
+        # Send initial drone list
+        await websocket.send_text(json.dumps({
+            "type": "drone_list",
+            "drones": list(active_drones.keys()),
+            "timestamp": time.time()
+        }))
+        
+        # Keep connection alive and handle disconnection
+        while True:
+            await websocket.receive_text()
+            
+    except WebSocketDisconnect:
+        print(f"[SERVER] ❌ UI client disconnected: {client_id}")
+    finally:
+        active_ui_clients.remove(websocket)
+
+async def broadcast_to_ui_clients(message: dict):
+    """Broadcast message to all UI clients"""
+    disconnected_clients = set()
+    
+    for client in active_ui_clients:
+        try:
+            await client.send_text(json.dumps(message))
+        except WebSocketDisconnect:
+            disconnected_clients.add(client)
+    
+    # Remove disconnected clients
+    active_ui_clients.difference_update(disconnected_clients)
 
 if __name__ == "__main__":
     import uvicorn
