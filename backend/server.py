@@ -23,8 +23,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class DroneConnection:
+    def __init__(self, websocket: WebSocket, drone_id: str):
+        self.websocket = websocket
+        self.drone_id = drone_id
+        self.is_connected = False
+        self.last_telemetry = None
+
 # Store active drone connections
-active_drones: Dict[str, WebSocket] = {}
+active_drones: Dict[str, DroneConnection] = {}
 active_ui_clients: Set[WebSocket] = set()
 
 @app.get("/")
@@ -38,9 +45,15 @@ async def root():
 
 async def broadcast_drone_list():
     """Broadcast updated drone list to all UI clients"""
+    # Only send available (not connected) drones
+    available_drones = [
+        drone_id for drone_id, conn in active_drones.items() 
+        if not conn.is_connected
+    ]
+    
     message = {
         "type": "drone_list",
-        "drones": list(active_drones.keys()),
+        "drones": available_drones,
         "timestamp": time.time()
     }
     await broadcast_to_ui_clients(message)
@@ -55,11 +68,11 @@ async def websocket_drone_endpoint(websocket: WebSocket, drone_id: str):
         drone_id = f"drone-{str(uuid.uuid4())[:8]}"
     
     # Register the drone
-    active_drones[drone_id] = websocket
-    print(f"[SERVER] ✅ Drone connected: {drone_id}")
-    print(f"[SERVER] 📊 Active drones: {len(active_drones)}")
+    drone_connection = DroneConnection(websocket, drone_id)
+    active_drones[drone_id] = drone_connection
+    print(f"[SERVER] ✅ Drone available: {drone_id}")
     
-    # Broadcast updated drone list when a new drone connects
+    # Broadcast updated drone list when a new drone becomes available
     await broadcast_drone_list()
     
     try:
@@ -73,125 +86,71 @@ async def websocket_drone_endpoint(websocket: WebSocket, drone_id: str):
         
         # Main communication loop
         while True:
-            # Wait for messages from the drone
             data = await websocket.receive_text()
             try:
                 message = json.loads(data)
                 print(f"[SERVER] 📥 Received from {drone_id}: {message}")
                 
-                # Process different message types
-                if message["type"] == "telemetry":
-                    # Add drone_id to telemetry data
+                if message["type"] == "connection_approved":
+                    drone_connection.is_connected = True
+                    # Notify UI clients of successful connection
+                    await broadcast_to_ui_clients({
+                        "type": "connection_success",
+                        "drone_id": drone_id,
+                        "timestamp": time.time()
+                    })
+                
+                elif message["type"] == "disconnect_confirmed":
+                    drone_connection.is_connected = False
+                    drone_connection.last_telemetry = None
+                    # Notify UI clients of disconnection
+                    await broadcast_to_ui_clients({
+                        "type": "drone_disconnected",
+                        "drone_id": drone_id,
+                        "timestamp": time.time()
+                    })
+                    # Broadcast updated available drone list
+                    await broadcast_drone_list()
+                
+                elif message["type"] == "telemetry":
+                    # Store last telemetry
+                    drone_connection.last_telemetry = message
+                    # Add drone_id and broadcast to UI
                     telemetry_data = {
                         "type": "telemetry",
                         "drone_id": drone_id,
                         **message
                     }
-                    # Broadcast to UI clients
                     await broadcast_to_ui_clients(telemetry_data)
-                    
-                    # In a full implementation, we would broadcast to UI clients
                     print(f"[SERVER] 📡 Telemetry from {drone_id}: Battery: {message.get('battery', 'N/A')}%, Signal: {message.get('signal_strength', 'N/A')}%")
-                    
-                    # Echo back acknowledgement
-                    await websocket.send_text(json.dumps({
-                        "type": "telemetry_ack",
-                        "timestamp": time.time(),
-                        "message": "Telemetry received"
-                    }))
-                if message["type"] == "request_mask":
-                    # Call mask generator module
-                    mask = generate_mask(message["image_data"])
-                    await websocket.send_text(json.dumps({
-                        "type": "mask_data",
-                        "mask": mask.tolist(),
-                        "timestamp": time.time()
-                    }))
-                elif message["type"] == "corrupted_image":
-                    # Call image reconstruction module
-                    original = reconstruct_image(message["image_data"], message["mask_data"])
-                    # Save to database
-                    image_id = save_image(original, message["metadata"])
-                    # Return result
-                    await websocket.send_text(json.dumps({
-                        "type": "reconstructed_image",
-                        "image_id": image_id,
-                        "timestamp": time.time() 
-                    }))
-                
-                elif message["type"] == "command_response":
-                    print(f"[SERVER] 🔄 Command response from {drone_id}: {message.get('status', 'unknown')} - {message.get('message', '')}")
                 
             except json.JSONDecodeError:
                 print(f"[SERVER] ⚠️ Received invalid JSON from {drone_id}")
-                await websocket.send_text(json.dumps({
-                    "type": "error",
-                    "message": "Invalid JSON format",
-                    "timestamp": time.time()
-                }))
     
     except WebSocketDisconnect:
-        # Handle disconnection
         print(f"[SERVER] ❌ Drone disconnected: {drone_id}")
-        active_drones.pop(drone_id, None)
-        # Broadcast updated drone list when a drone disconnects
-        await broadcast_drone_list()
+        if drone_id in active_drones:
+            if active_drones[drone_id].is_connected:
+                # Notify UI clients of disconnection
+                await broadcast_to_ui_clients({
+                    "type": "drone_disconnected",
+                    "drone_id": drone_id,
+                    "timestamp": time.time()
+                })
+            active_drones.pop(drone_id)
+            await broadcast_drone_list()
     
     except Exception as e:
         print(f"[SERVER] ⚠️ Error in drone {drone_id} connection: {str(e)}")
-        active_drones.pop(drone_id, None)
-        # Broadcast updated drone list on error
-        await broadcast_drone_list()
-
-@app.websocket("/ws/control")
-async def websocket_control_endpoint(websocket: WebSocket):
-    """Handle WebSocket connections from control interfaces"""
-    await websocket.accept()
-    control_id = f"control-{str(uuid.uuid4())[:8]}"
-    print(f"[SERVER] ✅ Control interface connected: {control_id}")
-    
-    try:
-        # Send drone list to the control interface
-        await websocket.send_text(json.dumps({
-            "type": "drone_list",
-            "drones": list(active_drones.keys()),
-            "timestamp": time.time()
-        }))
-        
-        # Wait for commands from the control interface
-        while True:
-            data = await websocket.receive_text()
-            try:
-                command = json.loads(data)
-                target_drone = command.get("drone_id")
-                
-                if target_drone in active_drones:
-                    # Forward command to the specified drone
-                    drone_ws = active_drones[target_drone]
-                    print(f"[SERVER] 📤 Sending command to {target_drone}: {command.get('command', 'unknown')}")
-                    await drone_ws.send_text(json.dumps({
-                        "type": "command",
-                        "command": command.get("command"),
-                        "params": command.get("params", {}),
-                        "timestamp": time.time()
-                    }))
-                else:
-                    # Drone not found
-                    print(f"[SERVER] ⚠️ Drone not found: {target_drone}")
-                    await websocket.send_text(json.dumps({
-                        "type": "error",
-                        "message": f"Drone {target_drone} not connected",
-                        "timestamp": time.time()
-                    }))
-            
-            except json.JSONDecodeError:
-                print("[SERVER] ⚠️ Received invalid JSON from control interface")
-    
-    except WebSocketDisconnect:
-        print(f"[SERVER] ❌ Control interface disconnected: {control_id}")
-    
-    except Exception as e:
-        print(f"[SERVER] ⚠️ Error in control interface connection: {str(e)}")
+        if drone_id in active_drones:
+            if active_drones[drone_id].is_connected:
+                await broadcast_to_ui_clients({
+                    "type": "drone_disconnected",
+                    "drone_id": drone_id,
+                    "timestamp": time.time()
+                })
+            active_drones.pop(drone_id)
+            await broadcast_drone_list()
 
 @app.websocket("/ws/ui")
 async def websocket_ui_endpoint(websocket: WebSocket):
@@ -200,20 +159,42 @@ async def websocket_ui_endpoint(websocket: WebSocket):
     client_id = f"ui-{str(uuid.uuid4())[:8]}"
     print(f"[SERVER] ✅ UI client connected: {client_id}")
     
-    # Add to active UI clients
     active_ui_clients.add(websocket)
     
     try:
         # Send initial drone list
         await websocket.send_text(json.dumps({
             "type": "drone_list",
-            "drones": list(active_drones.keys()),
+            "drones": [drone_id for drone_id, conn in active_drones.items() if not conn.is_connected],
             "timestamp": time.time()
         }))
         
-        # Keep connection alive and handle disconnection
+        # Handle UI client messages
         while True:
-            await websocket.receive_text()
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+                
+                if message["type"] == "connect_drone":
+                    drone_id = message["drone_id"]
+                    if drone_id in active_drones and not active_drones[drone_id].is_connected:
+                        # Forward connection request to drone
+                        await active_drones[drone_id].websocket.send_text(json.dumps({
+                            "type": "connect_request",
+                            "timestamp": time.time()
+                        }))
+                
+                elif message["type"] == "disconnect_drone":
+                    drone_id = message["drone_id"]
+                    if drone_id in active_drones and active_drones[drone_id].is_connected:
+                        # Forward disconnection request to drone
+                        await active_drones[drone_id].websocket.send_text(json.dumps({
+                            "type": "disconnect_request",
+                            "timestamp": time.time()
+                        }))
+            
+            except json.JSONDecodeError:
+                print(f"[SERVER] ⚠️ Received invalid JSON from UI client {client_id}")
             
     except WebSocketDisconnect:
         print(f"[SERVER] ❌ UI client disconnected: {client_id}")
@@ -230,7 +211,6 @@ async def broadcast_to_ui_clients(message: dict):
         except WebSocketDisconnect:
             disconnected_clients.add(client)
     
-    # Remove disconnected clients
     active_ui_clients.difference_update(disconnected_clients)
 
 if __name__ == "__main__":
