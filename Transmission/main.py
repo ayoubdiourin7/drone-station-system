@@ -27,10 +27,10 @@ while True:
     client_socket.sendall(data)
     
     frame= cv2.bitwise_and(frame,frame,mask=mask)
-    cv2.imshow("Pi Camera", cv2.resize(frame,(500,500)))
+    '''cv2.imshow("Pi Camera", cv2.resize(frame,(500,500)))
     key = cv2.waitKey(1)
     if  key == ord("q"):
-        break
+        break'''
 cv2.destroyAllWindows()
 #cam.close()
 client_socket.close()
