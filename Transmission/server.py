@@ -2,18 +2,18 @@ import cv2
 import numpy as np
 import socket
 from ImageCompressor import ImageCompressor
-from Streamer import stream_image
+from Streamer import Streamer
 from Models import NetE, AttrProxy
 import torch
 
 
 def generate_defined_mask(height=64, width=64):
     mask = np.ones((height, width), dtype=np.uint8)*255
-    mask[1::5, 1::5] = 0
+    mask[1::2, 1::2] = 0
     return mask
 
-HEIGHT = 64
-WIDTH = 64
+HEIGHT = 32
+WIDTH = 32
 
 HOST = '0.0.0.0'  # Listen on all interfaces
 PORT = 5001  # Port
@@ -33,7 +33,24 @@ def receive_data():
     conn, addr = server_socket.accept()
     print(f"Connected to {addr}")
 
-    stream_image(conn, comp, HEIGHT, WIDTH)
+    image_streamer = Streamer(comp, HEIGHT, WIDTH)
+    data = b""
+    while True:
+        # Receive command type (mask request or image transmission)
+        # Ensure we have at least 1 byte to read the command
+        while len(data) < 1:
+            data += conn.recv(4096)
+        # Extract command
+        command = data[:1].decode()
+        data = data[1:]  # Remove command from buffer
+        print(f"Received command: {command}")
+        if command == "C":
+            data = image_streamer.stream_image(conn, data)
+            if data is None:
+                print("Connection closed")
+                break
+        elif command == "U":
+            print("Received Full Image")
 
     conn.close()
     server_socket.close()

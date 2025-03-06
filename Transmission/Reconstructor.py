@@ -5,8 +5,9 @@ from Models import NetE, AttrProxy
 class Reconstructor:
     def __init__(self, model_path="model_best.pth"):
         # Safely load the model using the NetE class
-        torch.serialization.add_safe_globals([NetE])
-        self.model = torch.load(model_path, weights_only=False)
+        #torch.serialization.add_safe_globals([NetE])
+        #self.model = torch.load(model_path, weights_only=False)
+        self.model = torch.load(model_path)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = self.model.to(self.device)
         
