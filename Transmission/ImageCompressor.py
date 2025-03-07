@@ -15,7 +15,7 @@ class ImageCompressor:
         return message_size + data
         
     def decompress(self, sampled_pixels):
-        image = np.zeros((self.height, self.width,3), dtype=np.uint8)
+        image = np.ones((self.height, self.width,3), dtype=np.uint8)*128
         for (y, x), pixel in zip(self.indices, sampled_pixels):
             image[y, x] = pixel
         return image

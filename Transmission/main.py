@@ -75,7 +75,7 @@ def main():
         data = comp.dataImage(frame) # Frame sampled and ready to be sent
         client_socket.sendall(b"C")  # Send command to server to receive image
         client_socket.sendall(data)
-        frame = cv2.bitwise_and(frame,frame,mask=mask)
+        frame[mask == 0] = (128, 128, 128)
         #frame = cv2.resize(frame,(500,500))
         cv2.imshow("Pi Camera", frame)
         key = cv2.waitKey(1)
