@@ -6,17 +6,18 @@ from Reconstructor import Reconstructor
 import supervision as sv
 from PIL import Image, ImageTk
 import tkinter as tk
-
+from MaskGenerator import MaskGenerator
 
 
 class Streamer:
-    def __init__(self, comp, HEIGHT=500, WIDTH=500):
+    def __init__(self, comp, mask_generator, HEIGHT=500, WIDTH=500):
         self.fps_monitor = sv.FPSMonitor()
         self.rec = Reconstructor()
         self.payload_size = struct.calcsize("Q")  # Size of packed data length
         self.height = HEIGHT
         self.width = WIDTH
         self.comp = comp
+        self.mask_generator = mask_generator
 
 
     def stream_image(self, conn, data):
@@ -91,9 +92,14 @@ class Streamer:
         
         full_image = pickle.loads(frame_data)
 
+        mask = self.mask_generator.generate_and_store_mask(full_image)
+
+        cv2.imshow("Mask", cv2.resize(mask, None, fx=20, fy=20, interpolation=cv2.INTER_NEAREST))
+        
+
         # Resize without interpolation (just pixel replication)
         full_image = cv2.resize(full_image, None, fx=20, fy=20, interpolation=cv2.INTER_NEAREST)
-
+        
         # Show the received reconstructed image
         cv2.imshow("Full Image", full_image)
         if cv2.waitKey(1) & 0xFF == ord('q'):

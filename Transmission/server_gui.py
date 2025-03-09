@@ -12,13 +12,20 @@ from PIL import Image, ImageTk
 from time import time
 import pickle
 import struct
+from MaskGenerator import MaskGenerator
 
 #torch.serialization.add_safe_globals([NetE])
-INTERVAL = 10  # seconds
+INTERVAL_TIME = 50 # seconds
+INTERVAL_FRAMES = 10
+SAMPLE_RATE = 1
+LAMBDA_PARAM_MASK = 0.8
 
 def generate_random_mask(height=32, width=32, sampling_rate=0.5):
     """Generate a random mask."""
-    mask = np.random.choice([0, 255], size=(height, width), p=[1 - sampling_rate, sampling_rate]).astype(np.uint8)
+    #mask = np.random.choice([0, 255], size=(height, width), p=[1 - sampling_rate, sampling_rate]).astype(np.uint8)
+    mask = np.ones((height, width), dtype=np.uint8) * 255
+    mask[1::2, 1::2] = 0
+    mask[2::2, 2::2] = 0
     return mask
 
 
@@ -28,12 +35,9 @@ counter_var = None  # Tkinter variable for updating GUI
 
 
 
-def receive_data(height, width, host='0.0.0.0', port=5001):
+def receive_data(height, width,sample_rate, host='0.0.0.0', port=5001):
     """Receives image data from the client and updates the GUI counter."""
     global uncompressed_image_count
-
-    mask = generate_random_mask(height, width)
-    comp = ImageCompressor(mask)
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((host, port))
@@ -46,14 +50,17 @@ def receive_data(height, width, host='0.0.0.0', port=5001):
     
 
     # Send the initial mask and height/width to the client
+    mask = generate_random_mask(height, width)
     mhw_data = pickle.dumps((mask, height, width))
     message_size = struct.pack("Q", len(mhw_data))
     conn.sendall(message_size + mhw_data)  # Prefix "M" to indicate a mask update
     
-    
-    image_streamer = Streamer(comp, height, width)
+    comp = ImageCompressor(mask)
+    mask_generator = MaskGenerator(nb_images_mask=128, sample_rate=sample_rate,lambda_param=LAMBDA_PARAM_MASK, height=height, width=width)
+    image_streamer = Streamer(comp, mask_generator, height, width)
     last_sent_time = time()
     data = b""
+    frame_count = 0
     while True:
         while len(data) < 1:
             data += conn.recv(4096)
@@ -68,9 +75,11 @@ def receive_data(height, width, host='0.0.0.0', port=5001):
             if data is None:
                 print("Connection closed")
                 break
+        
         elif command == "U":
             # Increment counter
             uncompressed_image_count += 1
+            frame_count += 1
             print(f"Received Full Image - Count: {uncompressed_image_count}")
             data = image_streamer.stream_full_image(conn, data)
 
@@ -78,9 +87,11 @@ def receive_data(height, width, host='0.0.0.0', port=5001):
             root.after(0, update_counter)
 
         # **Check if INTERVAL seconds have passed, then send a new mask**
-        if time() - last_sent_time >= INTERVAL:
+        #if time() - last_sent_time >= INTERVAL:
+        if frame_count == INTERVAL_FRAMES:
+            frame_count = 0
             print("Sending new mask to client...")
-            new_mask = generate_random_mask(height, width)
+            new_mask = mask_generator.get_average_mask()
             mask_data = pickle.dumps(new_mask)
             message_size = struct.pack("Q", len(mask_data))
             conn.sendall(b"M" + message_size + mask_data)  # Prefix "M" to indicate a mask update
@@ -91,8 +102,8 @@ def receive_data(height, width, host='0.0.0.0', port=5001):
     cv2.destroyAllWindows()
 
 def send_mask(conn, height, width):
-    print("Sending new mask to client...")
     new_mask = generate_random_mask(height, width)
+    print("Sending new mask to client...")
     mask_data = pickle.dumps(new_mask)
     message_size = struct.pack("Q", len(mask_data))
     conn.sendall(b"M" + message_size + mask_data)  # Prefix "M" to indicate a mask update
@@ -112,7 +123,7 @@ def start_server():
             raise ValueError("Height and Width must be positive integers.")
 
         # Run the server in a new thread
-        server_thread = threading.Thread(target=receive_data, args=(height, width))
+        server_thread = threading.Thread(target=receive_data, args=(height, width, SAMPLE_RATE))
         server_thread.daemon = True  # Ensures it exits when the main program closes
         server_thread.start()
 

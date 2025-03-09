@@ -4,6 +4,7 @@ import torch.nn.init as init
 import torch
 import math
 
+B_residual_block = 8
 imageSize = 64
 
 class AttrProxy(object):
@@ -110,3 +111,109 @@ class NetE(nn.Module):
         init.normal_(self.dconv2.weight, 0.0, 0.02)
         init.normal_(self.dconv3.weight, 0.0, 0.02)
         init.normal_(self.dconv4.weight, 0.0, 0.02)
+
+
+
+
+class Mean_Shift(nn.Module):
+    def __init__(self, sample_rate=0.2):
+        super(Mean_Shift, self).__init__()
+        self.sample_rate = sample_rate
+        self.sample_rate = torch.autograd.Variable(torch.tensor(sample_rate), requires_grad=False)
+        if torch.cuda.is_available(): self.sample_rate = self.sample_rate.cuda()
+
+    def forward(self, x):
+        x_size = x.size()
+
+        x_mean = torch.mean(x, 2, True)
+        x_mean = torch.mean(x_mean, 3, True)
+        x_mean = x_mean.expand(x_size[0], x_size[1], x_size[2], x_size[3])
+
+        x_out = x / x_mean * self.sample_rate
+
+        return x_out
+
+
+class _Residual_Block(nn.Module):
+    def __init__(self):
+        super(_Residual_Block, self).__init__()
+
+        self.conv1 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.in1 = nn.InstanceNorm2d(64, affine=True)
+        self.relu = nn.LeakyReLU(0.2, inplace=True)
+        self.conv2 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.in2 = nn.InstanceNorm2d(64, affine=True)
+
+    def forward(self, x):
+        identity_data = x
+        output = self.relu(self.in1(self.conv1(x)))
+        output = self.in2(self.conv2(output))
+        output = torch.add(output,identity_data)
+        return output
+
+
+class NetM(nn.Module):
+    def __init__(self, nef, sample_rate):
+        super(NetM, self).__init__()
+
+        self.conv_input = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=9, stride=1, padding=4, bias=False)
+        self.relu = nn.LeakyReLU(0.2, inplace=True)
+
+        self.residual = self.make_layer(_Residual_Block, B_residual_block)
+
+        self.conv_mid = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn_mid = nn.InstanceNorm2d(64, affine=True)
+
+        self.conv_output = nn.Conv2d(in_channels=64, out_channels=1, kernel_size=9, stride=1, padding=4, bias=False)
+        self.conv_output_bn = nn.BatchNorm2d(1)
+        self.conv_output_sig = nn.Sigmoid()
+
+        self.mean_shift = Mean_Shift(sample_rate=sample_rate)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+
+    def make_layer(self, block, num_of_layer):
+        layers = []
+        for _ in range(num_of_layer):
+            layers.append(block())
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = self.relu(self.conv_input(x))
+        residual = out
+        out = self.residual(out)
+        out = self.bn_mid(self.conv_mid(out))
+        out = torch.add(out, residual)
+
+        out = self.conv_output_sig(self.conv_output_bn(self.conv_output(out)))
+        out = self.mean_shift(out)
+
+	# iterative mean-clamp, to keep the sample rate precise
+        for i in range(0, 25):
+            #   Clip to [0, 1]
+            out = torch.clamp(out, min=0.0, max=1.0)
+            out = self.mean_shift(out)
+        out = torch.clamp(out, min=0.0, max=1.0)
+        return out
+
+class NetME(nn.Module):
+    def __init__(self, nef, NetE_name, sample_rate):
+        super(NetME, self).__init__()
+        self.netM  = NetM(nef = 64, sample_rate = sample_rate)
+        self.netE = NetE(nef = 64)
+        self.netE = torch.load(NetE_name, weights_only=False)
+
+    def forward(self, x):
+        x_clone = x.clone()
+        mask = self.netM(x)
+        mask_4d = mask.expand(mask.shape[0], 3, mask.shape[2], mask.shape[3])
+
+        mask_x = mask_4d * x_clone
+        x_recon = self.netE(mask_x)
+
+        return mask, x_recon
