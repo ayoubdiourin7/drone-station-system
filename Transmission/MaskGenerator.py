@@ -2,7 +2,7 @@ import numpy as np
 from collections import deque
 import torch
 import cv2
-from Models import NetME
+from Models import NetME,NetE, AttrProxy
 
 class MaskGenerator:
     def __init__(self, nb_images_mask=1, sample_rate=0.5,lambda_param=0.0, height=32, width=32):
@@ -15,8 +15,8 @@ class MaskGenerator:
         
         # Load model
         try:
-            self.modelME = NetME(nef=64, NetE_name='model_best.pth', sample_rate=sample_rate)
-            self.modelME.load_state_dict(torch.load("model_bestM.pth", map_location=self.device))
+            self.modelME = NetME(nef=64, NetE_name='model_best05.pth', sample_rate=sample_rate)
+            self.modelME.load_state_dict(torch.load("model_bestM05.pth", map_location=self.device))
             self.modelME.to(self.device)
             self.modelME.eval()
             print("Model loaded successfully in MaskGenerator")
@@ -99,7 +99,7 @@ class MaskGenerator:
                 pixel_values = masks_array[:, y, x]
                 average_mask[y, x] = np.mean(pixel_values)'''
         
-        # Convert to binary mask using threshold
+        # Apply mean shift
         
         average_mask = average_mask.squeeze(0)
         average_mask_size = average_mask.size()
@@ -107,7 +107,8 @@ class MaskGenerator:
         average_mask_mean = torch.mean(average_mask_mean, 1, True)
         average_mask_mean = average_mask_mean.expand(average_mask_size[0], average_mask_size[1])
         average_mask_out = average_mask / average_mask_mean * self.sample_rate
-        average_mask_out = torch.clamp(average_mask_out, 0, 1)
+        average_mask_out = average_mask_out - average_mask_out.min() / (average_mask_out.max() - average_mask_out.min())
+        average_mask_out = average_mask_out.clamp(0, 1)
 
         binary_mask = average_mask_out.bernoulli().cpu().numpy()
         binary_mask = binary_mask.astype(np.uint8) * 255
@@ -119,3 +120,7 @@ class MaskGenerator:
     def clear_masks(self):
         """Clear stored masks"""
         self.stored_masks.clear()
+
+    def change_lambda_param(self, new_lambda_param):
+        """Change lambda parameter for mask generation"""
+        self.lambda_param = new_lambda_param

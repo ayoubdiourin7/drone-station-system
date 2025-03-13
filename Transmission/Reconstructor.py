@@ -3,7 +3,7 @@ import numpy as np
 from Models import NetE, AttrProxy
 
 class Reconstructor:
-    def __init__(self, model_path="model_best.pth"):
+    def __init__(self, model_path="model_best02.pth"):
         # Safely load the model using the NetE class
         #torch.serialization.add_safe_globals([NetE])
         #self.model = torch.load(model_path, weights_only=False)
